@@ -12,6 +12,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
+ENV CARGO_NET_RETRY=10 CARGO_HTTP_MULTIPLEXING=false
 RUN cargo install --locked cargo-pgrx --version 0.18.1
 WORKDIR /build
 COPY Cargo.toml pg_replica.control ./extension/

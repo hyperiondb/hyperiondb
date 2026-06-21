@@ -1,4 +1,5 @@
 FROM rust:1-bookworm AS build
+ENV CARGO_NET_RETRY=10 CARGO_HTTP_MULTIPLEXING=false
 WORKDIR /src
 COPY packages/failover-probe  ./failover-probe
 COPY packages/chaos-writer    ./chaos-writer
