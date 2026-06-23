@@ -46,6 +46,14 @@ cl_kill()    { _pgctl "$1" "\"\$B/pg_ctl\" -D $CL_PGDATA stop -m immediate"; }
 cl_stop()    { _pgctl "$1" "\"\$B/pg_ctl\" -D $CL_PGDATA stop -m fast"; }
 cl_start()   { _pgctl "$1" "rm -f $CL_PGDATA/postmaster.pid; \"\$B/pg_ctl\" -D $CL_PGDATA -l $CL_LOGFILE -w -t 120 start"; }
 cl_restart() { _pgctl "$1" "\"\$B/pg_ctl\" -D $CL_PGDATA -l $CL_LOGFILE -w -t 120 restart -m fast"; }
+cl_wipe() {
+  local node="$1" c v; c="$(cname "$node")"
+  docker stop -t 3 "$c" >/dev/null 2>&1 || true
+  for v in $(docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$c" 2>/dev/null); do
+    docker run --rm --entrypoint sh -v "$v:/w" pg-replica-paradedb:test -c 'rm -rf /w/* /w/.[!.]* 2>/dev/null; true' >/dev/null 2>&1 || true
+  done
+  docker start "$c" >/dev/null 2>&1 || true
+}
 cl_pause()   { docker pause "$(cname "$1")" >/dev/null 2>&1 || true; }
 cl_unpause() { docker unpause "$(cname "$1")" >/dev/null 2>&1 || true; }
 

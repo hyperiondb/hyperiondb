@@ -27,6 +27,12 @@ log "stopping deposed primary at $DATADIR (immediate: never let a graceful shutd
 CONF_SAVE="$(dirname "$DATADIR")/$(basename "$DATADIR").conf.save"
 cp "$DATADIR/postgresql.conf" "$CONF_SAVE"
 
+log "waiting for leader $LEADER_HOST:$LEADER_PORT to finish promoting (a rewind against a not-yet-promoted leader is a no-op that strands us on the old timeline)"
+for _ in $(seq 1 120); do
+  [ "$("$PGBIN/psql" "host=$LEADER_HOST port=$LEADER_PORT user=replicator dbname=postgres${PASS_KW}" -tAc 'SELECT NOT pg_is_in_recovery()' 2>/dev/null | tr -d '[:space:]')" = "t" ] && break
+  sleep 1
+done
+
 log "pg_rewind against leader $LEADER_HOST:$LEADER_PORT"
 if "$PGBIN/pg_rewind" \
   --target-pgdata="$DATADIR" \
