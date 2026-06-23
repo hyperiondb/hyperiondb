@@ -11,13 +11,13 @@ authors = ["Tadas Talaikis <info@nordlet.com>"]
 keywords = ["postgresql", "raft", "failover", "replication", "pgrx"]
 categories = ["database"]
 
-[lib]
-crate-type = ["cdylib", "lib"]
-
 [features]
 default = ["pg18"]
 pg18 = ["pgrx/pg18", "pgrx-tests/pg18"]
 pg_test = []
+
+[lib]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
 pgrx = "=0.18.1"
