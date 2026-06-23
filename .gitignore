@@ -9,3 +9,4 @@ Cargo.lock
 packages/*/target/
 dist/
 .codegraph/
+.claude/

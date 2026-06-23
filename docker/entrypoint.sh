@@ -71,6 +71,21 @@ pg_replica.watchdog_script = '/opt/pg_replica/watchdog.sh'
 EOF
 }
 
+# Cluster auth lives in pg_hba.conf, which sits INSIDE PGDATA. A data-volume wipe,
+# pg_basebackup re-clone, or pg_rewind can therefore leave a node — including one that
+# later gets promoted to primary — without the replication rule, and its replicas then
+# loop forever on: no pg_hba.conf entry for replication connection ... user "replicator".
+# pg_replica only manages primary_conninfo, never pg_hba, so nothing else repairs this.
+# Re-assert the rules idempotently on every boot, before Postgres starts, for ALL nodes.
+ensure_hba() {
+  local hba="$PGDATA/pg_hba.conf"
+  [ -f "$hba" ] || return 0
+  grep -qE '^[[:space:]]*host[[:space:]]+replication[[:space:]]+all[[:space:]]+all[[:space:]]+scram-sha-256' "$hba" \
+    || echo "host replication all all scram-sha-256" >> "$hba"
+  grep -qE '^[[:space:]]*host[[:space:]]+all[[:space:]]+all[[:space:]]+all[[:space:]]+scram-sha-256' "$hba" \
+    || echo "host all         all all scram-sha-256" >> "$hba"
+}
+
 write_passfile
 export PGPASSFILE="$PASSFILE"
 
@@ -80,10 +95,7 @@ if [ ! -s "$PGDATA/PG_VERSION" ]; then
     (umask 077; printf '%s\n' "$SU_PASSWORD" > /tmp/su.pw)
     "$PGBIN/initdb" -D "$PGDATA" -U postgres -A scram-sha-256 --pwfile=/tmp/su.pw --locale=C.UTF-8 >/dev/null
     rm -f /tmp/su.pw
-    {
-      echo "host all         all all scram-sha-256"
-      echo "host replication all all scram-sha-256"
-    } >> "$PGDATA/pg_hba.conf"
+    ensure_hba
     node_conf
 
     "$PGBIN/pg_ctl" -D "$PGDATA" -o "-c listen_addresses=127.0.0.1" -w start >/dev/null
@@ -129,6 +141,10 @@ EOF
     echo "[node$NODE_ID] standby ready"
   fi
 fi
+
+# Every boot (not just first-time seed): repair pg_hba if a clone/rewind/wipe dropped the
+# replication rule. No-op when already present. Must run before Postgres starts below.
+ensure_hba
 
 chmod 0700 "$PGDATA"
 
