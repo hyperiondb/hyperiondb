@@ -200,7 +200,6 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
                 return;
             }
         };
-    handle.bootstrap();
     pgrx::log!(
         "pg_replica: node {} openraft started (raft_port={}, members={:?})",
         node_id,
@@ -226,6 +225,8 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
     let mut authorized_since: Option<Instant> = None;
     let mut datadir: Option<String> = None;
     let mut cluster_marker = false;
+    let mut did_initialize = false;
+    let mut genesis_ready_since: Option<Instant> = None;
     let mut ticks: u64 = 0;
     let gossip_every: u64 = 5;
     let dead_timeout = Duration::from_millis(2500);
@@ -287,11 +288,11 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
         let decided_seq = decided.map(|decision| decision.seq).unwrap_or(0);
 
         ticks += 1;
+        let my_lsn = local_wal_lsn(in_recovery);
+        peers_lsn.insert(node_id, (my_lsn, in_recovery, Instant::now()));
         if ticks % gossip_every == 0 {
-            let lsn = local_wal_lsn(in_recovery);
-            peers_lsn.insert(node_id, (lsn, in_recovery, Instant::now()));
             let payload =
-                failover::encode_gossip(lsn, in_recovery, reconfirm_pending, decided_seq);
+                failover::encode_gossip(my_lsn, in_recovery, reconfirm_pending, decided_seq);
             handle.gossip_broadcast(node_id, &payload);
         }
 
@@ -313,29 +314,32 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
             }
         }
 
-        if handle.is_leader() {
-            let now = Instant::now();
-            let live: Vec<(u64, u64, bool)> = peers_lsn
-                .iter()
-                .filter(|(id, (_, _, seen))| {
-                    **id == node_id || now.duration_since(*seen) < dead_timeout
-                })
-                .map(|(id, (lsn, recovery, _))| (*id, *lsn, *recovery))
-                .collect();
+        let live_now = Instant::now();
+        let live: Vec<(u64, u64, bool)> = peers_lsn
+            .iter()
+            .filter(|(id, (_, _, seen))| {
+                **id == node_id || live_now.duration_since(*seen) < dead_timeout
+            })
+            .map(|(id, (lsn, recovery, _))| (*id, *lsn, *recovery))
+            .collect();
+        let genesis_winner = failover::choose_primary(&live);
+        let cluster_seq = peers_seq.values().copied().max().unwrap_or(0);
+        let leads_data = !live.iter().any(|c| c.0 != node_id && c.1 > my_lsn);
 
+        if handle.is_leader() {
             let current_primary = decided.map(|decision| decision.primary).unwrap_or(0);
-            let primary_alive =
-                current_primary != 0 && live.iter().any(|candidate| candidate.0 == current_primary);
+            let primary_alive = current_primary != 0
+                && match live.iter().find(|c| c.0 == current_primary) {
+                    Some(p) => !(p.2 && live.iter().any(|o| o.1 > p.1)),
+                    None => false,
+                };
             let needs_reconfirm = reconfirm_pending
                 || live
                     .iter()
                     .any(|member| peers_reconfirm.get(&member.0).copied().unwrap_or(false));
 
             let candidate = if decided.is_none() {
-                live.iter()
-                    .filter(|member| !member.2)
-                    .map(|member| member.0)
-                    .min()
+                genesis_winner
             } else if !primary_alive {
                 let psql_ref = &psql;
                 let my_host_ref = &my_host;
@@ -406,6 +410,24 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
             })
             .count();
         let quorum_ok = 1 + reachable >= majority;
+
+        let genesis_ready =
+            decided.is_none() && cluster_seq == 0 && !cluster_marker && quorum_ok && leads_data;
+        if genesis_ready && !did_initialize {
+            let since = *genesis_ready_since.get_or_insert(contact_now);
+            if contact_now.duration_since(since) >= confirm_window {
+                handle.bootstrap();
+                did_initialize = true;
+                pgrx::log!(
+                    "pg_replica: node {} genesis -> initialize raft (members={:?})",
+                    node_id,
+                    voters
+                );
+            }
+        } else if !genesis_ready {
+            genesis_ready_since = None;
+        }
+
         if in_recovery {
             applied_read_only = None;
             authorized_since = None;
@@ -485,9 +507,13 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
                 }
                 slots_ensured = true;
             }
-            let cluster_seq = peers_seq.values().copied().max().unwrap_or(0);
             let raw_auth = match decided {
-                None => quorum_ok && cluster_seq == 0 && !cluster_marker,
+                None => {
+                    quorum_ok
+                        && cluster_seq == 0
+                        && !cluster_marker
+                        && genesis_winner == Some(node_id)
+                }
                 Some(decision) => {
                     decision.primary == node_id && quorum_ok && !reconfirm_pending
                 }
@@ -495,7 +521,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
             let authorized = if !raw_auth {
                 authorized_since = None;
                 false
-            } else if applied_read_only == Some(false) {
+            } else if decided.is_none() || applied_read_only == Some(false) {
                 authorized_since = Some(Instant::now());
                 true
             } else {
