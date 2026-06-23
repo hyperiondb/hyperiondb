@@ -71,12 +71,6 @@ pg_replica.watchdog_script = '/opt/pg_replica/watchdog.sh'
 EOF
 }
 
-# Cluster auth lives in pg_hba.conf, which sits INSIDE PGDATA. A data-volume wipe,
-# pg_basebackup re-clone, or pg_rewind can therefore leave a node — including one that
-# later gets promoted to primary — without the replication rule, and its replicas then
-# loop forever on: no pg_hba.conf entry for replication connection ... user "replicator".
-# pg_replica only manages primary_conninfo, never pg_hba, so nothing else repairs this.
-# Re-assert the rules idempotently on every boot, before Postgres starts, for ALL nodes.
 ensure_hba() {
   local hba="$PGDATA/pg_hba.conf"
   [ -f "$hba" ] || return 0
@@ -86,22 +80,57 @@ ensure_hba() {
     || echo "host all         all all scram-sha-256" >> "$hba"
 }
 
-write_passfile
-export PGPASSFILE="$PASSFILE"
+find_primary() {
+  local spec id hostport host port
+  for spec in $(echo "$PG_ADDRS" | tr ',' ' '); do
+    id="${spec%%@*}"; hostport="${spec#*@}"; host="${hostport%%:*}"; port="${hostport##*:}"
+    [ "$id" = "$NODE_ID" ] && continue
+    "$PGBIN/pg_isready" -h "$host" -p "$port" -q >/dev/null 2>&1 || continue
+    [ "$(PGPASSFILE="$PASSFILE" "$PGBIN/psql" -h "$host" -p "$port" -U replicator -d postgres -tAc 'SELECT NOT pg_is_in_recovery()' 2>/dev/null | tr -d '[:space:]')" = "t" ] || continue
+    echo "$host $port"; return 0
+  done
+  return 1
+}
 
-if [ ! -s "$PGDATA/PG_VERSION" ]; then
-  if [ "$NODE_ID" = "1" ]; then
-    echo "[node1] seeding: initdb (scram) + roles + extensions"
-    (umask 077; printf '%s\n' "$SU_PASSWORD" > /tmp/su.pw)
-    "$PGBIN/initdb" -D "$PGDATA" -U postgres -A scram-sha-256 --pwfile=/tmp/su.pw --locale=C.UTF-8 >/dev/null
-    rm -f /tmp/su.pw
-    ensure_hba
-    node_conf
+any_peer_up() {
+  local spec id hostport host port
+  for spec in $(echo "$PG_ADDRS" | tr ',' ' '); do
+    id="${spec%%@*}"; hostport="${spec#*@}"; host="${hostport%%:*}"; port="${hostport##*:}"
+    [ "$id" = "$NODE_ID" ] && continue
+    "$PGBIN/pg_isready" -h "$host" -p "$port" -q >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
 
-    "$PGBIN/pg_ctl" -D "$PGDATA" -o "-c listen_addresses=127.0.0.1" -w start >/dev/null
-    "$PGBIN/psql" -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 \
-      -v repl_pw="$REPL_PASSWORD" -v app_user="$APP_USER" -v app_pw="$APP_PASSWORD" \
-      -v app_db="$APP_DB" >/dev/null <<'SQL'
+clone_standby() {
+  local src_host="$1" src_port="$2"
+  echo "[node$NODE_ID] cloning from primary $src_host:$src_port via pg_basebackup"
+  until "$PGBIN/pg_basebackup" -h "$src_host" -p "$src_port" -U replicator -D "$PGDATA" -X stream >/dev/null 2>&1; do
+    echo "[node$NODE_ID] basebackup not ready; retrying"; sleep 3
+  done
+  cat >> "$PGDATA/postgresql.conf" <<EOF
+
+cluster_name = 'node$NODE_ID'
+pg_replica.node_id = $NODE_ID
+primary_slot_name = 'node$NODE_ID'
+EOF
+  echo "primary_conninfo = 'host=$src_host port=$src_port user=replicator passfile=$PASSFILE application_name=node$NODE_ID'" >> "$PGDATA/postgresql.auto.conf"
+  touch "$PGDATA/standby.signal"
+  echo "[node$NODE_ID] standby ready (cloned from $src_host:$src_port)"
+}
+
+seed_primary() {
+  echo "[node1] seeding: initdb (scram) + roles + extensions"
+  (umask 077; printf '%s\n' "$SU_PASSWORD" > /tmp/su.pw)
+  "$PGBIN/initdb" -D "$PGDATA" -U postgres -A scram-sha-256 --pwfile=/tmp/su.pw --locale=C.UTF-8 >/dev/null
+  rm -f /tmp/su.pw
+  ensure_hba
+  node_conf
+
+  "$PGBIN/pg_ctl" -D "$PGDATA" -o "-c listen_addresses=127.0.0.1" -w start >/dev/null
+  "$PGBIN/psql" -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 \
+    -v repl_pw="$REPL_PASSWORD" -v app_user="$APP_USER" -v app_pw="$APP_PASSWORD" \
+    -v app_db="$APP_DB" >/dev/null <<'SQL'
 CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD :'repl_pw';
 GRANT pg_monitor TO replicator;
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text, boolean, boolean) TO replicator;
@@ -113,37 +142,38 @@ CREATE DATABASE :"app_db" OWNER :"app_user";
 CREATE EXTENSION IF NOT EXISTS pg_replica;
 CREATE TABLE IF NOT EXISTS demo (t text);
 SQL
-    for spec in $(echo "$PEERS" | tr ',' ' '); do
-      pid="${spec%%@*}"
-      [ "$pid" != "$NODE_ID" ] && "$PGBIN/psql" -h 127.0.0.1 -U postgres -d postgres -tAc \
-        "SELECT pg_create_physical_replication_slot('node$pid', true)" >/dev/null 2>&1 || true
-    done
-    "$PGBIN/psql" -h 127.0.0.1 -U postgres -d "$APP_DB" -v ON_ERROR_STOP=1 \
-      -c 'CREATE EXTENSION IF NOT EXISTS pg_search;' >/dev/null
-    "$PGBIN/pg_ctl" -D "$PGDATA" -w stop >/dev/null
-    echo "[node1] seed complete"
-  else
-    echo "[node$NODE_ID] waiting for seed $SEED_HOST, then pg_basebackup"
-    until "$PGBIN/pg_isready" -h "$SEED_HOST" -p 5432 -U postgres -d postgres >/dev/null 2>&1; do sleep 2; done
-    until "$PGBIN/pg_basebackup" -h "$SEED_HOST" -p 5432 -U replicator -D "$PGDATA" -X stream >/dev/null 2>&1; do
-      echo "[node$NODE_ID] basebackup not ready (seed still seeding); retrying"; sleep 3
-    done
-    # basebackup cloned node1's config; override only the per-node identity.
-    cat >> "$PGDATA/postgresql.conf" <<EOF
+  for spec in $(echo "$PEERS" | tr ',' ' '); do
+    pid="${spec%%@*}"
+    [ "$pid" != "$NODE_ID" ] && "$PGBIN/psql" -h 127.0.0.1 -U postgres -d postgres -tAc \
+      "SELECT pg_create_physical_replication_slot('node$pid', true)" >/dev/null 2>&1 || true
+  done
+  "$PGBIN/psql" -h 127.0.0.1 -U postgres -d "$APP_DB" -v ON_ERROR_STOP=1 \
+    -c 'CREATE EXTENSION IF NOT EXISTS pg_search;' >/dev/null
+  "$PGBIN/pg_ctl" -D "$PGDATA" -w stop >/dev/null
+  echo "[node1] seed complete"
+}
 
-cluster_name = 'node$NODE_ID'
-pg_replica.node_id = $NODE_ID
-primary_slot_name = 'node$NODE_ID'
-EOF
-    echo "primary_conninfo = 'host=$SEED_HOST port=5432 user=replicator passfile=$PASSFILE application_name=node$NODE_ID'" \
-      >> "$PGDATA/postgresql.auto.conf"
-    touch "$PGDATA/standby.signal"
-    echo "[node$NODE_ID] standby ready"
+write_passfile
+export PGPASSFILE="$PASSFILE"
+
+if [ ! -s "$PGDATA/PG_VERSION" ]; then
+  src_host=""; src_port=""; saw_peer=0; i=0
+  while :; do
+    i=$((i + 1))
+    found="$(find_primary || true)"
+    if [ -n "$found" ]; then set -- $found; src_host="$1"; src_port="$2"; break; fi
+    any_peer_up && saw_peer=1
+    [ "$NODE_ID" = "1" ] && [ "$saw_peer" = 0 ] && [ "$i" -ge 5 ] && break
+    [ $((i % 15)) -eq 0 ] && echo "[node$NODE_ID] empty data dir; waiting for a live primary to clone from (saw_peer=$saw_peer)"
+    sleep 2
+  done
+  if [ -n "$src_host" ]; then
+    clone_standby "$src_host" "$src_port"
+  else
+    seed_primary
   fi
 fi
 
-# Every boot (not just first-time seed): repair pg_hba if a clone/rewind/wipe dropped the
-# replication rule. No-op when already present. Must run before Postgres starts below.
 ensure_hba
 
 chmod 0700 "$PGDATA"
