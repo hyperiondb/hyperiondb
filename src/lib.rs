@@ -495,7 +495,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
             let authorized = if !raw_auth {
                 authorized_since = None;
                 false
-            } else if decided.is_none() || applied_read_only == Some(false) {
+            } else if applied_read_only == Some(false) {
                 authorized_since = Some(Instant::now());
                 true
             } else {
