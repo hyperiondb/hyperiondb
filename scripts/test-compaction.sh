@@ -7,12 +7,31 @@ P1=1 P2=2 P3=3
 
 q() { cl_q "$1" "$2"; }
 ins() { cl_ins "$1" "$2"; }
-seq_of() { q "$1" "SELECT replica.status()" | grep -oE "seq=[0-9]+" | head -1 | cut -d= -f2; }
+seq_of() {
+  local node="$1" s i
+  for i in $(seq 1 20); do
+    s="$(q "$node" "SELECT replica.status()" 2>/dev/null | grep -oE 'seq=[0-9]+' | head -1 | cut -d= -f2)"
+    [ -n "$s" ] && { echo "$s"; return 0; }
+    sleep 0.5
+  done
+  return 1
+}
+wait_primary() {
+  local p i
+  for i in $(seq 1 40); do
+    p="$(cl_primary_node 2>/dev/null || true)"
+    [ -n "$p" ] && { echo "$p"; return 0; }
+    sleep 0.5
+  done
+  return 1
+}
+# decided_seq is cluster-wide; read it off the current primary (robust to failover during the pump).
+cluster_seq() { local p; p="$(wait_primary)" || return 1; seq_of "$p"; }
 
 echo "=== cluster ready (compact_threshold=${COMPACT_THRESHOLD:-8}) ==="
 cl_wait_status "$P1" "decided_primary=1 seq=1 quorum=true read_only=false" 80
 ins $P1 marker >/dev/null
-SEQ0=$(seq_of $P1); SZ0=$(cl_raft_file_size 1)
+SEQ0=$(cluster_seq); SZ0=$(cl_raft_file_size 1)
 echo "  start: seq=$SEQ0  raft_file_bytes(node1)=$SZ0"
 
 echo
@@ -26,7 +45,7 @@ for r in $(seq 1 18); do
 done
 sleep 2
 
-SEQ1=$(seq_of $P1); SZ1=$(cl_raft_file_size 1); SZ2=$(cl_raft_file_size 2); SZ3=$(cl_raft_file_size 3)
+SEQ1=$(cluster_seq); SZ1=$(cl_raft_file_size 1); SZ2=$(cl_raft_file_size 2); SZ3=$(cl_raft_file_size 3)
 NLOG1=$(cl_raft_log_len 1)
 echo "  after pumping: seq=$SEQ1"
 echo "  raft log file bytes: node1=$SZ1 node2=$SZ2 node3=$SZ3"
@@ -42,7 +61,8 @@ echo "  node3 restarted; seq after recovery = $N3SEQ (retained entries = $(cl_ra
 
 echo
 echo "=== cluster still healthy: write on primary replicates ==="
-ins $P1 after-compaction >/dev/null
+PRIM=$(wait_primary || echo $P1)
+ins "$PRIM" after-compaction >/dev/null
 sleep 1
 D1=$(q $P1 "SELECT count(*) FROM demo"); D3=$(q $P3 "SELECT count(*) FROM demo")
 echo "  demo rows: node1=$D1 node3=$D3"

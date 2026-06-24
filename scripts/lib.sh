@@ -6,7 +6,7 @@ CL_PASSFILE="${CL_PASSFILE:-/var/lib/postgresql/.pgpass}"
 CL_RAFT_PORT="${CL_RAFT_PORT:-7400}"
 CL_RAFT_DIR="${CL_RAFT_DIR:-/var/lib/postgresql/raft}"
 CL_FAKETIME_LIB="${CL_FAKETIME_LIB:-}"
-SU_PASSWORD="${SU_PASSWORD:-pgr_super_pw}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-pgr_super_pw}"
 
 cname() { echo "pgr-node$1"; }
 
@@ -47,12 +47,24 @@ cl_stop()    { _pgctl "$1" "\"\$B/pg_ctl\" -D $CL_PGDATA stop -m fast"; }
 cl_start()   { _pgctl "$1" "rm -f $CL_PGDATA/postmaster.pid; \"\$B/pg_ctl\" -D $CL_PGDATA -l $CL_LOGFILE -w -t 120 start"; }
 cl_restart() { _pgctl "$1" "\"\$B/pg_ctl\" -D $CL_PGDATA -l $CL_LOGFILE -w -t 120 restart -m fast"; }
 cl_wipe() {
-  local node="$1" c v; c="$(cname "$node")"
-  docker stop -t 3 "$c" >/dev/null 2>&1 || true
-  for v in $(docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$c" 2>/dev/null); do
-    docker run --rm --entrypoint sh -v "$v:/w" pg-replica-paradedb:test -c 'rm -rf /w/* /w/.[!.]* 2>/dev/null; true' >/dev/null 2>&1 || true
+  local node="$1" c v out vols; c="$(cname "$node")"
+  out="$(docker stop -t 3 "$c" 2>&1)" || echo "  [cl_wipe node$node] docker stop FAILED: $out"
+  vols="$(docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$c" 2>&1)" \
+    || { echo "  [cl_wipe node$node] docker inspect FAILED: $vols"; vols=""; }
+  [ -n "${vols// /}" ] || echo "  [cl_wipe node$node] WARNING: no named volumes found on $c to wipe"
+  for v in $vols; do
+    if out="$(docker run --rm --entrypoint sh -v "$v:/w" pg-replica-paradedb:test \
+        -c 'rm -rf /w/* /w/.[!.]* /w/..?* 2>/dev/null; r="$(ls -A /w 2>/dev/null)"; [ -z "$r" ] || { echo "leftover: $r"; exit 1; }' 2>&1)"; then
+      echo "  [cl_wipe node$node] wiped volume $v (verified empty)"
+    else
+      echo "  [cl_wipe node$node] volume wipe FAILED ($v): $out"
+    fi
   done
-  docker start "$c" >/dev/null 2>&1 || true
+  if out="$(docker start "$c" 2>&1)"; then
+    echo "  [cl_wipe node$node] container $c restarted"
+  else
+    echo "  [cl_wipe node$node] docker start FAILED: $out"
+  fi
 }
 cl_pause()   { docker pause "$(cname "$1")" >/dev/null 2>&1 || true; }
 cl_unpause() { docker unpause "$(cname "$1")" >/dev/null 2>&1 || true; }
@@ -114,7 +126,7 @@ cl_primary_node() {
 cl_pg_conninfo() {
   local hosts="" ports="" n
   for n in $CL_NODES; do hosts+="node$n,"; ports+="5432,"; done
-  echo "host=${hosts%,} port=${ports%,} user=postgres password=$SU_PASSWORD dbname=postgres target_session_attrs=read-write connect_timeout=2"
+  echo "host=${hosts%,} port=${ports%,} user=postgres password=$POSTGRES_PASSWORD dbname=postgres target_session_attrs=read-write connect_timeout=2"
 }
 
 cl_wait_status() {

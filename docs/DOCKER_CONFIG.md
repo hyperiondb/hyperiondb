@@ -8,17 +8,15 @@ Example is with [ParadeDb](https://github.com/paradedb/paradedb)
 FROM postgres:18-trixie
 
 ARG PGR_VERSION=0.3.0
-ARG PG_SEARCH_VERSION=0.24.0
 ARG WALG_VERSION=v3.0.8
 
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends curl ca-certificates postgresql-18-cron postgresql-18-postgis-3 postgresql-18-postgis-3-scripts; \
     arch="$(dpkg --print-architecture)"; \
-    curl -fsSL "https://github.com/paradedb/paradedb/releases/download/v${PG_SEARCH_VERSION}/postgresql-18-pg-search_${PG_SEARCH_VERSION}-1PARADEDB-trixie_${arch}.deb" -o /tmp/pg_search.deb; \
     curl -fsSL "https://hyperiondb.github.io/hyperiondb/pool/main/postgresql-18-pg-replica_${PGR_VERSION}_${arch}.deb" -o /tmp/pg_replica.deb; \
-    apt-get install -y /tmp/pg_search.deb /tmp/pg_replica.deb; \
-    rm -f /tmp/pg_search.deb /tmp/pg_replica.deb; \
+    apt-get install -y /tmp/pg_replica.deb; \
+    /tmp/pg_replica.deb; \
     case "$arch" in \
       amd64) wgarch=amd64 ;; \
       arm64) wgarch=aarch64 ;; \
@@ -33,7 +31,7 @@ RUN set -eux; \
 ## postgres.conf
 
 ```
-shared_preload_libraries = 'pg_search,pg_cron,pg_replica'
+shared_preload_libraries = 'pg_cron,pg_replica'
 
 wal_level = replica
 max_wal_senders = 10

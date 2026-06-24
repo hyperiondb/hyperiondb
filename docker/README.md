@@ -17,7 +17,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-First boot: `node1` seeds (initdb + roles + `CREATE EXTENSION pg_search` + `pg_replica`),
+First boot: `node1` seeds (initdb + roles + `CREATE EXTENSION pg_replica`),
 then `node2`/`node3` `pg_basebackup` from it and join the Raft group. Watch it form in
 Dozzle (http://localhost:8888) or:
 
@@ -66,7 +66,7 @@ so it always builds against the right PG:
    clean image, adds the control-plane helpers (`rejoin.sh`, `watchdog.sh`), and uses
    `entrypoint.sh` to seed/replica each node.
 
-`entrypoint.sh` sets `shared_preload_libraries = 'pg_search,pg_replica'` and the per-node
+`entrypoint.sh` sets `shared_preload_libraries = 'pg_replica'` and the per-node
 `pg_replica.*` GUCs (node id, raft port, peers, pg_addrs, passfile, synchronous). Auth is
 **SCRAM everywhere, no trust** (a chmod-600 `~/.pgpass` holds the replicator + superuser
 passwords; `initdb -A scram-sha-256 --pwfile` bootstraps the superuser).

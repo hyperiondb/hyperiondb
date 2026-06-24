@@ -48,7 +48,14 @@ for t in "${TESTS[@]}"; do
   fi
   echo "$out" | grep -vE "screen size|FTS index" | grep -E "^  (PASS|FAIL|CHECK)"
   res=$(echo "$out" | grep -E "^  (PASS|FAIL|CHECK)" | head -1)
-  if echo "$res" | grep -q "PASS"; then pass=$((pass+1)); mark="PASS"; else other=$((other+1)); mark="CHECK"; fi
+  if echo "$res" | grep -q "PASS"; then
+    pass=$((pass+1)); mark="PASS"
+  else
+    other=$((other+1)); mark="CHECK"
+    echo "  ---- full output for $t (did not PASS) ----"
+    echo "$out" | grep -vE "screen size|FTS index" | sed 's/^/  | /'
+    echo "  ---- end output for $t ----"
+  fi
   SUMMARY+=("$(printf '%-24s %s' "$t" "$mark")")
 done
 "${COMPOSE[@]}" down -v >/dev/null 2>&1

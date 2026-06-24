@@ -6,24 +6,13 @@ set -euo pipefail
 
 PGDATA="${PGDATA:-/var/lib/postgresql/data}"
 PGBIN="$(pg_config --bindir)"
+PGCONF="${PGCONF:-/etc/postgresql/postgresql.conf}"
 PASSFILE=/var/lib/postgresql/.pgpass
+RAFT_DIR="${RAFT_DIR:-/var/lib/postgresql/raft}"
 
 : "${NODE_ID:?NODE_ID required}"
-: "${RAFT_PORT:=7400}"
-: "${PEERS:?PEERS required}"
-: "${PG_ADDRS:?PG_ADDRS required}"
-: "${SEED_HOST:=node1}"
-: "${SU_PASSWORD:?SU_PASSWORD required}"
-: "${REPL_PASSWORD:?REPL_PASSWORD required}"
-: "${APP_USER:=weido}"
-: "${APP_PASSWORD:=weido_pw}"
-: "${APP_DB:=weido}"
-: "${SYNCHRONOUS:=off}"
-: "${WAL_KEEP:=512MB}"
-: "${MAX_WAL:=1GB}"
-: "${COMPACT_THRESHOLD:=64}"
-: "${RAFT_DIR:=/var/lib/postgresql/raft}"
-: "${MAX_SLOT_WAL_KEEP:=1GB}"
+: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}"
+: "${REPL_PASS:?REPL_PASS required}"
 
 # Running as root (image default): fix ownership, then drop to the postgres user.
 if [ "$(id -u)" = '0' ]; then
@@ -36,39 +25,32 @@ mkdir -p "$RAFT_DIR"
 
 write_passfile() {
   {
-    printf '*:*:*:replicator:%s\n' "$REPL_PASSWORD"
-    printf '*:*:*:postgres:%s\n'   "$SU_PASSWORD"
+    printf '*:*:*:replicator:%s\n' "$REPL_PASS"
+    printf '*:*:*:postgres:%s\n'   "$POSTGRES_PASSWORD"
   } > "$PASSFILE"
   chmod 600 "$PASSFILE"
 }
 
-node_conf() {
-  cat >> "$PGDATA/postgresql.conf" <<EOF
+members() {
+  if [ -n "${PG_ADDRS:-}" ]; then printf '%s' "$PG_ADDRS"; return 0; fi
+  [ -f "$PGCONF" ] || return 0
+  sed -n "s/^[[:space:]]*pg_replica\.pg_addrs[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p" "$PGCONF" | head -1
+}
 
-listen_addresses = '*'
-cluster_name = 'node$NODE_ID'
-wal_level = replica
-max_wal_senders = 10
-max_replication_slots = 10
-hot_standby = on
-wal_log_hints = on
-wal_keep_size = '$WAL_KEEP'
-max_wal_size = '$MAX_WAL'
-max_slot_wal_keep_size = '$MAX_SLOT_WAL_KEEP'
-primary_slot_name = 'node$NODE_ID'
-shared_preload_libraries = 'pg_search,pg_replica'
-pg_replica.node_id = $NODE_ID
-pg_replica.raft_port = $RAFT_PORT
-pg_replica.peers = '$PEERS'
-pg_replica.pg_addrs = '$PG_ADDRS'
-pg_replica.psql = '$PGBIN/psql'
-pg_replica.passfile = '$PASSFILE'
-pg_replica.synchronous = $SYNCHRONOUS
-pg_replica.compact_threshold = $COMPACT_THRESHOLD
-pg_replica.raft_dir = '$RAFT_DIR'
-pg_replica.rejoin_script = '/opt/pg_replica/rejoin.sh'
-pg_replica.watchdog_script = '/opt/pg_replica/watchdog.sh'
-EOF
+node_conf() {
+  {
+    echo ""
+    echo "include '$PGCONF'"
+    echo "cluster_name = 'node$NODE_ID'"
+    echo "primary_slot_name = 'node$NODE_ID'"
+    echo "pg_replica.node_id = $NODE_ID"
+    echo "pg_replica.psql = '$PGBIN/psql'"
+    [ -n "${SYNCHRONOUS:-}" ]       && echo "pg_replica.synchronous = $SYNCHRONOUS"
+    [ -n "${COMPACT_THRESHOLD:-}" ] && echo "pg_replica.compact_threshold = $COMPACT_THRESHOLD"
+    [ -n "${WAL_KEEP:-}" ]          && echo "wal_keep_size = '$WAL_KEEP'"
+    [ -n "${MAX_WAL:-}" ]           && echo "max_wal_size = '$MAX_WAL'"
+    true
+  } >> "$PGDATA/postgresql.conf"
 }
 
 ensure_hba() {
@@ -82,7 +64,7 @@ ensure_hba() {
 
 find_primary() {
   local spec id hostport host port
-  for spec in $(echo "$PG_ADDRS" | tr ',' ' '); do
+  for spec in $(members | tr ',' ' '); do
     id="${spec%%@*}"; hostport="${spec#*@}"; host="${hostport%%:*}"; port="${hostport##*:}"
     [ "$id" = "$NODE_ID" ] && continue
     "$PGBIN/pg_isready" -h "$host" -p "$port" -q >/dev/null 2>&1 || continue
@@ -94,7 +76,7 @@ find_primary() {
 
 any_peer_up() {
   local spec id hostport host port
-  for spec in $(echo "$PG_ADDRS" | tr ',' ' '); do
+  for spec in $(members | tr ',' ' '); do
     id="${spec%%@*}"; hostport="${spec#*@}"; host="${hostport%%:*}"; port="${hostport##*:}"
     [ "$id" = "$NODE_ID" ] && continue
     "$PGBIN/pg_isready" -h "$host" -p "$port" -q >/dev/null 2>&1 && return 0
@@ -121,7 +103,7 @@ EOF
 
 seed_primary() {
   echo "[node1] seeding: initdb (scram) + roles + extensions"
-  (umask 077; printf '%s\n' "$SU_PASSWORD" > /tmp/su.pw)
+  (umask 077; printf '%s\n' "$POSTGRES_PASSWORD" > /tmp/su.pw)
   "$PGBIN/initdb" -D "$PGDATA" -U postgres -A scram-sha-256 --pwfile=/tmp/su.pw --locale=C.UTF-8 >/dev/null
   rm -f /tmp/su.pw
   ensure_hba
@@ -129,26 +111,21 @@ seed_primary() {
 
   "$PGBIN/pg_ctl" -D "$PGDATA" -o "-c listen_addresses=127.0.0.1" -w start >/dev/null
   "$PGBIN/psql" -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 \
-    -v repl_pw="$REPL_PASSWORD" -v app_user="$APP_USER" -v app_pw="$APP_PASSWORD" \
-    -v app_db="$APP_DB" >/dev/null <<'SQL'
+    -v repl_pw="$REPL_PASS" >/dev/null <<'SQL'
 CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD :'repl_pw';
 GRANT pg_monitor TO replicator;
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text, boolean, boolean) TO replicator;
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_stat_file(text, boolean) TO replicator;
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text) TO replicator;
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean) TO replicator;
-CREATE ROLE :"app_user" WITH LOGIN PASSWORD :'app_pw';
-CREATE DATABASE :"app_db" OWNER :"app_user";
 CREATE EXTENSION IF NOT EXISTS pg_replica;
 CREATE TABLE IF NOT EXISTS demo (t text);
 SQL
-  for spec in $(echo "$PEERS" | tr ',' ' '); do
+  for spec in $(members | tr ',' ' '); do
     pid="${spec%%@*}"
     [ "$pid" != "$NODE_ID" ] && "$PGBIN/psql" -h 127.0.0.1 -U postgres -d postgres -tAc \
       "SELECT pg_create_physical_replication_slot('node$pid', true)" >/dev/null 2>&1 || true
   done
-  "$PGBIN/psql" -h 127.0.0.1 -U postgres -d "$APP_DB" -v ON_ERROR_STOP=1 \
-    -c 'CREATE EXTENSION IF NOT EXISTS pg_search;' >/dev/null
   "$PGBIN/pg_ctl" -D "$PGDATA" -w stop >/dev/null
   echo "[node1] seed complete"
 }

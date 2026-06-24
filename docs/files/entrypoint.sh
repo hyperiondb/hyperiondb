@@ -38,8 +38,6 @@ GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text, boolean, boolean)          
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_stat_file(text, boolean)                        TO replicator;
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text)                          TO replicator;
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean) TO replicator;
-CREATE EXTENSION IF NOT EXISTS pg_search;
-ALTER EXTENSION pg_search UPDATE;
 CREATE EXTENSION IF NOT EXISTS pg_replica;
 CREATE EXTENSION IF NOT EXISTS amcheck;
 SQL

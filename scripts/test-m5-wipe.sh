@@ -31,6 +31,18 @@ wait_converged() {
   return 1
 }
 
+dump_node() {
+  local n="$1" c; c="$(cname "$n")"
+  echo "  --- DIAG $c (node$n) ---"
+  echo "  state: $(docker inspect -f 'status={{.State.Status}} running={{.State.Running}} restarts={{.RestartCount}} exit={{.State.ExitCode}} err={{.State.Error}} oom={{.State.OOMKilled}}' "$c" 2>&1)"
+  echo "  -- docker logs (tail 200) --"
+  docker logs --tail 200 "$c" 2>&1 | sed 's/^/  | /'
+  echo "  -- pg_replica data.log (tail 200) --"
+  cl_node_logfile "$n" 2>/dev/null | tail -200 | sed 's/^/  | /'
+  echo "  --- end DIAG $c ---"
+}
+dump_all() { local n; for n in "$@"; do dump_node "$n"; done; }
+
 echo "=== cluster ready ==="
 cl_wait_status "$P1" "decided_primary=1 seq=1 quorum=true read_only=false" 80
 ins $P1 before-wipe >/dev/null
@@ -52,6 +64,7 @@ for i in $(seq 1 240); do
   sleep 1
 done
 echo "  node2 re-cloned + streaming: $([ "$standby_ok" = 1 ] && echo YES || echo NO)"
+[ "$standby_ok" = 1 ] || { echo "  node2 did NOT re-clone after standby wipe — docker diagnostics:"; dump_all 2 1; }
 wait_converged "post-standby-wipe" && echo "  cluster reconverged after standby wipe" || echo "  WARN: not converged after standby wipe"
 
 echo
@@ -90,4 +103,6 @@ if [ "$standby_ok" = 1 ] && [ "$final_ok" = 1 ] && [ "$CONS" = 1 ] && [ "$MARKER
   echo "  PASS: full data+raft volume wipe of a standby AND the primary both auto-recovered (re-clone + rejoin) with no manual action; cluster reconverged (primary node${FINAL_PRIMARY}), data consistent on all nodes [${D[$P1]}]"
 else
   echo "  CHECK: standby_ok=$standby_ok converged=$final_ok consistent=$CONS marker=$MARKER final_primary=${FINAL_PRIMARY:-none} demos=[${D[$P1]}|${D[$P2]}|${D[$P3]}]"
+  echo "  full docker diagnostics (all nodes):"
+  dump_all 1 2 3
 fi

@@ -10,7 +10,7 @@ function Compose { docker compose -f $composeFile @args }
 
 $tests = @(
   'test-model','test-m3-lsn','test-m4-fence','test-m4-watchdog','test-m4-partition',
-  'test-m5-rejoin','test-m5-walgone','test-compaction','test-m6-routing','test-m7-sync',
+  'test-m5-rejoin','test-m5-walgone','test-m5-wipe','test-compaction','test-m6-routing','test-m7-sync',
   'test-quorum-consistency','test-perf','test-chaos'
 )
 
@@ -54,9 +54,16 @@ foreach ($t in $tests) {
     if (-not (Wait-Ready)) { Write-Host '  (warning: node1 not ready in time; running test anyway)' }
     $out = Compose run --rm runner bash "scripts/$t.sh" 2>&1 | Out-String
   }
-  $lines = @($out -split "`n" | Where-Object { $_ -match '^\s+(PASS|FAIL|CHECK)' })
+  $lines = @($out -split "`n" | Where-Object { $_ -cmatch '^\s+(PASS|FAIL|CHECK)' })
   $lines | ForEach-Object { Write-Host $_.TrimEnd() }
-  if ($lines.Count -gt 0 -and $lines[0] -match '\bPASS\b') { $pass++; $mark = 'PASS' } else { $other++; $mark = 'CHECK' }
+  if ($lines.Count -gt 0 -and $lines[0] -cmatch '\bPASS\b') {
+    $pass++; $mark = 'PASS'
+  } else {
+    $other++; $mark = 'CHECK'
+    Write-Host "  ---- full output for $t (did not PASS) ----"
+    ($out -split "`n" | Where-Object { $_ -notmatch 'screen size|FTS index' }) | ForEach-Object { Write-Host ('  | ' + $_.TrimEnd()) }
+    Write-Host "  ---- end output for $t ----"
+  }
   $summary += ('{0,-24} {1}' -f $t, $mark)
 }
 Clear-Tunables
