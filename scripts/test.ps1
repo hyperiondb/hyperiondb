@@ -11,7 +11,7 @@ function Compose { docker compose -f $composeFile @args }
 $tests = @(
   'test-model','test-m3-lsn','test-m4-fence','test-m4-watchdog','test-m4-partition',
   'test-m5-rejoin','test-m5-walgone','test-m5-wipe','test-compaction','test-m6-routing','test-m7-sync',
-  'test-quorum-consistency','test-perf','test-chaos'
+  'test-quorum-consistency','test-perf','test-genesis-coldstart','test-chaos'
 )
 
 $envMap = @{

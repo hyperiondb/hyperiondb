@@ -48,7 +48,7 @@ Result: roles, DDL, and data stay consistent on every node, and a dead primary i
 - **Zero committed-transaction loss** (opt-in) — quorum-sync ties the Postgres sync quorum (`synchronous_standby_names`) to the Raft consensus quorum, so an acked write is always present on the node that gets promoted.
 - **Crash-safe consensus storage** — the Raft log, vote, and state machine are persisted with atomic write + `fsync` of both the file data **and** the containing directory, so an entry acknowledged as durable survives power loss.
 - **Bounded on-disk footprint** — the Raft log is compacted via snapshotting; it does not grow without limit.
-- **Operable from SQL** — `SELECT pg_replica.status();`, `pg_replica.failover()`, and friends. No sidecar agent or CLI required.
+- **Operable from SQL** — `SELECT replica.status();` reports role, term, leader, LSNs, and lag; failover is automatic (consensus-driven). No sidecar agent or CLI required.
 - **Client follows the failover** — a multi-host libpq / Node client (`target_session_attrs=read-write`) re-resolves the new primary on reconnect; the extension only *publishes* who the primary is.
 - **Lightweight** — one `.so` plus Postgres: single-digit-MB private memory, sub-percent idle CPU, ~5 s to a writable new primary.
 
@@ -142,6 +142,8 @@ Coverage (`scripts/test-*.sh`, each spins a real 3-node cluster):
 | `test-m4-partition` | a **network-partitioned** (but running) primary self-demotes |
 | `test-m5-rejoin` | deposed primary `pg_rewind`-rejoins as a standby |
 | `test-m5-walgone` | WAL gone → automatic **`pg_basebackup` re-clone** |
+| `test-m5-wipe` | full **data + raft volume wipe** of a standby *and* the primary each auto-recover (re-clone + rejoin) with no manual action; cluster reconverges, data consistent |
+| `test-genesis-coldstart` | all nodes **cold-start at once from equal LSN** with no prior consensus and still converge on **exactly one leader** — guards the split-genesis race |
 | `test-compaction` | Raft log stays **bounded** via snapshotting |
 | `test-m6-routing` | a multi-host client **follows the failover** with only a reconnect |
 | `test-m7-sync` | quorum-sync = **zero committed-transaction loss** on failover |
@@ -161,7 +163,7 @@ Coverage (`scripts/test-*.sh`, each spins a real 3-node cluster):
 - Lightweight: one `.so` extension + Postgres; no JVM, no Go control plane, no k8s.
 - Safe by default: quorum-gated, fences the old primary, picks the most-advanced
   replica, rejoins the loser with `pg_rewind`.
-- Operable from SQL: `SELECT pg_replica.status();`, `pg_replica.failover()`, etc.
+- Operable from SQL: `SELECT replica.status();` (role, term, leader, LSNs, lag); failover is automatic.
 
 **Non-goals**
 - Sharding / horizontal write scale-out → that is Citus, a different axis.

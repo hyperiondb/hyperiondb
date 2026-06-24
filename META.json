@@ -2,7 +2,7 @@
    "name": "pg_replica",
    "abstract": "Consensus-driven automatic failover for PostgreSQL (embedded Raft control plane)",
    "description": "pg_replica gives a small cluster of vanilla PostgreSQL nodes automatic, consensus-driven failover. An embedded Raft quorum running inside a background worker keeps a single leader elected, fences the old primary, promotes the highest-LSN survivor, and rejoins the loser with pg_rewind, with no external coordination service (no etcd, Consul, or Kubernetes). Tables, indexes, roles, GRANTs, DDL, and extensions replicate byte-for-byte over PostgreSQL physical streaming replication.",
-   "version": "0.6.7",
+   "version": "0.6.8",
    "maintainer": [
       "Tadas Talaikis <info@nordlet.com>"
    ],
@@ -11,7 +11,7 @@
       "pg_replica": {
          "abstract": "Consensus-driven automatic failover for PostgreSQL",
          "file": "pg_replica.control",
-         "version": "0.6.7"
+         "version": "0.6.8"
       }
    },
    "prereqs": {

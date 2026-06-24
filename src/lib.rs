@@ -200,6 +200,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
                 return;
             }
         };
+    handle.bootstrap();
     pgrx::log!(
         "pg_replica: node {} openraft started (raft_port={}, members={:?})",
         node_id,
@@ -225,8 +226,6 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
     let mut authorized_since: Option<Instant> = None;
     let mut datadir: Option<String> = None;
     let mut cluster_marker = false;
-    let mut did_initialize = false;
-    let mut genesis_ready_since: Option<Instant> = None;
     let mut ticks: u64 = 0;
     let gossip_every: u64 = 5;
     let dead_timeout = Duration::from_millis(2500);
@@ -324,7 +323,6 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
             .collect();
         let genesis_winner = failover::choose_primary(&live);
         let cluster_seq = peers_seq.values().copied().max().unwrap_or(0);
-        let leads_data = !live.iter().any(|c| c.0 != node_id && c.1 > my_lsn);
 
         if handle.is_leader() {
             let current_primary = decided.map(|decision| decision.primary).unwrap_or(0);
@@ -410,23 +408,6 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
             })
             .count();
         let quorum_ok = 1 + reachable >= majority;
-
-        let genesis_ready =
-            decided.is_none() && cluster_seq == 0 && !cluster_marker && quorum_ok && leads_data;
-        if genesis_ready && !did_initialize {
-            let since = *genesis_ready_since.get_or_insert(contact_now);
-            if contact_now.duration_since(since) >= confirm_window {
-                handle.bootstrap();
-                did_initialize = true;
-                pgrx::log!(
-                    "pg_replica: node {} genesis -> initialize raft (members={:?})",
-                    node_id,
-                    voters
-                );
-            }
-        } else if !genesis_ready {
-            genesis_ready_since = None;
-        }
 
         if in_recovery {
             applied_read_only = None;
