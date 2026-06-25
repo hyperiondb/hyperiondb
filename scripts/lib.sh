@@ -7,6 +7,8 @@ CL_RAFT_PORT="${CL_RAFT_PORT:-7400}"
 CL_RAFT_DIR="${CL_RAFT_DIR:-/var/lib/postgresql/raft}"
 CL_FAKETIME_LIB="${CL_FAKETIME_LIB:-}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-pgr_super_pw}"
+CL_USER="${CL_USER:-pgr_admin}"
+CL_DB="${CL_DB:-postgres}"
 
 cname() { echo "pgr-node$1"; }
 
@@ -14,6 +16,7 @@ _pgexec() {
   local node="$1"; shift
   docker exec -i -u postgres \
     -e PGPASSFILE="$CL_PASSFILE" \
+    -e PGDATABASE="$CL_DB" \
     ${PGCONNECT_TIMEOUT:+-e PGCONNECT_TIMEOUT="$PGCONNECT_TIMEOUT"} \
     "$(cname "$node")" "$@"
 }
@@ -23,17 +26,17 @@ _rootexec() {
   docker exec -i -u root "$(cname "$node")" "$@"
 }
 
-cl_q() { _pgexec "$1" psql -h 127.0.0.1 -U postgres -tAc "$2" 2>&1; }
+cl_q() { _pgexec "$1" psql -h 127.0.0.1 -U "$CL_USER" -tAc "$2" 2>&1; }
 
-cl_q_quiet() { _pgexec "$1" psql -h 127.0.0.1 -U postgres -tAc "$2" 2>/dev/null; }
+cl_q_quiet() { _pgexec "$1" psql -h 127.0.0.1 -U "$CL_USER" -tAc "$2" 2>/dev/null; }
 
-cl_ins() { _pgexec "$1" psql -h 127.0.0.1 -U postgres -tAc "INSERT INTO demo VALUES (\$cltag\$$2\$cltag\$)" 2>&1; }
+cl_ins() { _pgexec "$1" psql -h 127.0.0.1 -U "$CL_USER" -tAc "INSERT INTO demo VALUES (\$cltag\$$2\$cltag\$)" 2>&1; }
 
-cl_psql() { local node="$1"; shift; _pgexec "$node" psql -h 127.0.0.1 -U postgres "$@"; }
+cl_psql() { local node="$1"; shift; _pgexec "$node" psql -h 127.0.0.1 -U "$CL_USER" "$@"; }
 
-cl_psql_t() { local secs="$1" node="$2"; shift 2; timeout "$secs" docker exec -i -u postgres -e PGPASSFILE="$CL_PASSFILE" "$(cname "$node")" psql -h 127.0.0.1 -U postgres "$@"; }
+cl_psql_t() { local secs="$1" node="$2"; shift 2; timeout "$secs" docker exec -i -u postgres -e PGPASSFILE="$CL_PASSFILE" -e PGDATABASE="$CL_DB" "$(cname "$node")" psql -h 127.0.0.1 -U "$CL_USER" "$@"; }
 
-cl_pgbench() { local node="$1"; shift; _pgexec "$node" pgbench -h 127.0.0.1 -U postgres "$@"; }
+cl_pgbench() { local node="$1"; shift; _pgexec "$node" pgbench -h 127.0.0.1 -U "$CL_USER" "$@"; }
 
 cl_put() { _pgexec "$1" sh -c "cat > $2"; }
 
@@ -126,7 +129,7 @@ cl_primary_node() {
 cl_pg_conninfo() {
   local hosts="" ports="" n
   for n in $CL_NODES; do hosts+="node$n,"; ports+="5432,"; done
-  echo "host=${hosts%,} port=${ports%,} user=postgres password=$POSTGRES_PASSWORD dbname=postgres target_session_attrs=read-write connect_timeout=2"
+  echo "host=${hosts%,} port=${ports%,} user=$CL_USER password=$POSTGRES_PASSWORD dbname=$CL_DB target_session_attrs=read-write connect_timeout=2"
 }
 
 cl_wait_status() {

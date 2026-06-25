@@ -5,8 +5,8 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 COMPOSE=(docker compose -f docker/docker-compose.test.yml)
 
-TESTS=(test-model test-m3-lsn test-m4-fence test-m4-watchdog test-m4-partition
-       test-m5-rejoin test-m5-walgone test-m5-wipe test-genesis-coldstart test-compaction test-m6-routing test-m7-sync
+TESTS=(test-genesis-coldstart test-model test-m3-lsn test-m4-fence test-m4-watchdog test-m4-partition
+       test-m5-rejoin test-m5-walgone test-m5-wipe test-compaction test-m6-routing test-m7-sync
        test-quorum-consistency test-perf test-chaos)
 
 test_env() {
@@ -23,7 +23,7 @@ test_env() {
 wait_ready() {
   for _ in $(seq 1 120); do
     docker exec -u postgres -e PGPASSFILE=/var/lib/postgresql/.pgpass pgr-node1 \
-      psql -h 127.0.0.1 -U postgres -tAc 'SELECT 1' >/dev/null 2>&1 && return 0
+      psql -h 127.0.0.1 -U "${CL_USER:-pgr_admin}" -d postgres -tAc 'SELECT 1' >/dev/null 2>&1 && return 0
     sleep 1
   done
   return 1

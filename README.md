@@ -135,6 +135,7 @@ Coverage (`scripts/test-*.sh`, each spins a real 3-node cluster):
 
 | Test | Proves |
 |------|--------|
+| `test-genesis-coldstart` | all nodes **cold-start at once from equal LSN** with no prior consensus and still converge on **exactly one leader** — guards the split-genesis race |
 | `test-model` | **formal model check** (stateright, exhaustive, N=3 and N=5): **(1) durability** — the sync-quorum math (`ack = majority`) loses **no acked transaction** across every reachable crash/failover interleaving; **(2) split-brain** — a **resurrected stale-term primary** can never commit a conflicting write (a commit needs a majority still at the leader's term). Both have negative controls that produce counterexamples |
 | `test-m3-lsn` | failover promotes the **highest-LSN** survivor (no data loss) |
 | `test-m4-fence` | minority primary **self-demotes** read-only (no split-brain) |
@@ -143,7 +144,6 @@ Coverage (`scripts/test-*.sh`, each spins a real 3-node cluster):
 | `test-m5-rejoin` | deposed primary `pg_rewind`-rejoins as a standby |
 | `test-m5-walgone` | WAL gone → automatic **`pg_basebackup` re-clone** |
 | `test-m5-wipe` | full **data + raft volume wipe** of a standby *and* the primary each auto-recover (re-clone + rejoin) with no manual action; cluster reconverges, data consistent |
-| `test-genesis-coldstart` | all nodes **cold-start at once from equal LSN** with no prior consensus and still converge on **exactly one leader** — guards the split-genesis race |
 | `test-compaction` | Raft log stays **bounded** via snapshotting |
 | `test-m6-routing` | a multi-host client **follows the failover** with only a reconnect |
 | `test-m7-sync` | quorum-sync = **zero committed-transaction loss** on failover |

@@ -9,6 +9,7 @@ PGBIN="$(pg_config --bindir)"
 PGCONF="${PGCONF:-/etc/postgresql/postgresql.conf}"
 PASSFILE=/var/lib/postgresql/.pgpass
 RAFT_DIR="${RAFT_DIR:-/var/lib/postgresql/raft}"
+POSTGRES_USER="${POSTGRES_USER:-postgres}"
 
 : "${NODE_ID:?NODE_ID required}"
 : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}"
@@ -26,7 +27,7 @@ mkdir -p "$RAFT_DIR"
 write_passfile() {
   {
     printf '*:*:*:replicator:%s\n' "$REPL_PASS"
-    printf '*:*:*:postgres:%s\n'   "$POSTGRES_PASSWORD"
+    printf '*:*:*:%s:%s\n' "$POSTGRES_USER" "$POSTGRES_PASSWORD"
   } > "$PASSFILE"
   chmod 600 "$PASSFILE"
 }
@@ -104,13 +105,13 @@ EOF
 seed_primary() {
   echo "[node1] seeding: initdb (scram) + roles + extensions"
   (umask 077; printf '%s\n' "$POSTGRES_PASSWORD" > /tmp/su.pw)
-  "$PGBIN/initdb" -D "$PGDATA" -U postgres -A scram-sha-256 --pwfile=/tmp/su.pw --locale=C.UTF-8 >/dev/null
+  "$PGBIN/initdb" -D "$PGDATA" -U "$POSTGRES_USER" -A scram-sha-256 --pwfile=/tmp/su.pw --locale=C.UTF-8 >/dev/null
   rm -f /tmp/su.pw
   ensure_hba
   node_conf
 
   "$PGBIN/pg_ctl" -D "$PGDATA" -o "-c listen_addresses=127.0.0.1" -w start >/dev/null
-  "$PGBIN/psql" -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  "$PGBIN/psql" -h 127.0.0.1 -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 \
     -v repl_pw="$REPL_PASS" >/dev/null <<'SQL'
 CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD :'repl_pw';
 GRANT pg_monitor TO replicator;
@@ -123,7 +124,7 @@ CREATE TABLE IF NOT EXISTS demo (t text);
 SQL
   for spec in $(members | tr ',' ' '); do
     pid="${spec%%@*}"
-    [ "$pid" != "$NODE_ID" ] && "$PGBIN/psql" -h 127.0.0.1 -U postgres -d postgres -tAc \
+    [ "$pid" != "$NODE_ID" ] && "$PGBIN/psql" -h 127.0.0.1 -U "$POSTGRES_USER" -d postgres -tAc \
       "SELECT pg_create_physical_replication_slot('node$pid', true)" >/dev/null 2>&1 || true
   done
   "$PGBIN/pg_ctl" -D "$PGDATA" -w stop >/dev/null

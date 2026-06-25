@@ -15,7 +15,7 @@ flock -n 9 || exit 0
 
 LOG="$(dirname "$HB")/pg_replica_wd_${NODE}.log"
 log() { echo "[wd $(date -u +%H:%M:%S)] $*" >>"$LOG"; }
-psql_q() { PGCONNECT_TIMEOUT=2 "$PSQL" -h "$HOST" -p "$PORT" -U "$PGUSER" -w -tAc "$1" 2>/dev/null; }
+psql_q() { PGCONNECT_TIMEOUT=2 "$PSQL" -h "$HOST" -p "$PORT" -U "$PGUSER" -d postgres -w -tAc "$1" 2>/dev/null; }
 
 log "deadman watchdog start (node $NODE port $PORT stale=${STALE_MS}ms)"
 miss=0

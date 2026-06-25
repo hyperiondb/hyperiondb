@@ -28,7 +28,7 @@ function Clear-Tunables { foreach ($k in $tunables) { Remove-Item "env:$k" -Erro
 function Wait-Ready {
   for ($i = 0; $i -lt 120; $i++) {
     docker exec -u postgres -e PGPASSFILE=/var/lib/postgresql/.pgpass pgr-node1 `
-      psql -h 127.0.0.1 -U postgres -tAc 'SELECT 1' 2>$null | Out-Null
+      psql -h 127.0.0.1 -U pgr_admin -d postgres -tAc 'SELECT 1' 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) { return $true }
     Start-Sleep -Seconds 1
   }

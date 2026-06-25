@@ -2,6 +2,7 @@ name: pg-replica-test
 
 x-node-env: &node-env
   PGDATA: "/var/lib/postgresql/data"
+  POSTGRES_USER: "${POSTGRES_USER:-pgr_admin}"
   POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-pgr_super_pw}"
   REPL_PASS: "${REPL_PASS:-pgr_repl_pw}"
   PGR_SUPERVISE: "hold"
