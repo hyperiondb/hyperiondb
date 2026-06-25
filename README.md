@@ -12,7 +12,7 @@ Replaces Patroni, CloudNativePG, pgActive and many more.
 One job: keep a single leader elected and the data byte-identical across N nodes,
 and fail over automatically when the leader dies. Do that one job well.
 
-Status: **in production**
+Status: **in production**, used for [hsearch](https://github.com/hyperiondb/search)
 
 ---
 
