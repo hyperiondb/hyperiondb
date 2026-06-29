@@ -49,6 +49,7 @@ Result: roles, DDL, and data stay consistent on every node, and a dead primary i
 - **Crash-safe consensus storage** — the Raft log, vote, and state machine are persisted with atomic write + `fsync` of both the file data **and** the containing directory, so an entry acknowledged as durable survives power loss.
 - **Bounded on-disk footprint** — the Raft log is compacted via snapshotting; it does not grow without limit.
 - **Operable from SQL** — `SELECT replica.status();` reports role, term, leader, LSNs, and lag; failover is automatic (consensus-driven). No sidecar agent or CLI required.
+- **Vault-driven secret rotation** — `SELECT replica.rotate_credential(role, password)` applies a rotated role password on the current primary (no-op on standbys), so [hyperion-vault](https://github.com/hyperiondb/hyperion-vault) can push Postgres password rotations into the live cluster.
 - **Client follows the failover** — a multi-host libpq / Node client (`target_session_attrs=read-write`) re-resolves the new primary on reconnect; the extension only *publishes* who the primary is.
 - **Lightweight** — one `.so` plus Postgres: single-digit-MB private memory, sub-percent idle CPU, ~5 s to a writable new primary.
 

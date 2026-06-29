@@ -1,6 +1,6 @@
 [package]
 name = "pg_replica"
-version = "0.6.9"
+version = "0.7.0"
 edition = "2021"
 publish = true
 description = "Consensus-driven failover for PostgreSQL (Raft control plane)"

@@ -664,6 +664,30 @@ mod replica {
             live
         )
     }
+
+    #[pg_extern]
+    fn rotate_credential(role: &str, new_password: &str) -> bool {
+        let in_recovery: bool = Spi::get_one("SELECT pg_is_in_recovery()")
+            .unwrap_or(Some(true))
+            .unwrap_or(true);
+        if in_recovery {
+            return false;
+        }
+        let sql = format!(
+            "ALTER ROLE {} PASSWORD {}",
+            quote_ident(role),
+            quote_literal(new_password)
+        );
+        Spi::run(&sql).is_ok()
+    }
+
+    fn quote_ident(value: &str) -> String {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    }
+
+    fn quote_literal(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "''"))
+    }
 }
 
 #[cfg(any(test, feature = "pg_test"))]
