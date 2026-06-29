@@ -51,7 +51,7 @@ Result: roles, DDL, and data stay consistent on every node, and a dead primary i
 - **Operable from SQL** — `SELECT replica.status();` reports role, term, leader, LSNs, and lag; failover is automatic (consensus-driven). No sidecar agent or CLI required.
 - **Vault-driven secret rotation** — `SELECT replica.rotate_credential(role, password)` applies a rotated role password on the current primary (no-op on standbys), so [hyperion-vault](https://github.com/hyperiondb/hyperion-vault) can push Postgres password rotations into the live cluster.
 - **Client follows the failover** — a multi-host libpq / Node client (`target_session_attrs=read-write`) re-resolves the new primary on reconnect; the extension only *publishes* who the primary is.
-- **Native Node.js client (Rust)** — [`hyperiondb-client`](../node-addon), a napi/Rust addon: a multi-host connection pool with read-write/read-only routing that re-resolves the primary on reconnect.
+- **Native Node.js client (Rust)** — [`hyperiondb-client`](https://github.com/hyperiondb/hyperiondb-node), a napi/Rust addon: a multi-host connection pool with read-write/read-only routing that re-resolves the primary on reconnect.
 - **Lightweight** — one `.so` plus Postgres: single-digit-MB private memory, sub-percent idle CPU, ~5 s to a writable new primary.
 
 ---
