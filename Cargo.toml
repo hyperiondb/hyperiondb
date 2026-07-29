@@ -1,6 +1,6 @@
 [package]
 name = "pg_replica"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 publish = true
 description = "Consensus-driven failover for PostgreSQL (Raft control plane)"
@@ -22,7 +22,7 @@ crate-type = ["cdylib", "lib"]
 [dependencies]
 pgrx = "=0.18.1"
 libc = "=0.2.186"
-openraft = { version = "=0.9.24", features = ["serde", "storage-v2", "loosen-follower-log-revert"] }
+openraft = { version = "=0.9.25", features = ["serde", "storage-v2", "loosen-follower-log-revert"] }
 tokio = { version = "=1.52.3", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
