@@ -46,6 +46,7 @@ node_conf() {
     echo "primary_slot_name = 'node$NODE_ID'"
     echo "pg_replica.node_id = $NODE_ID"
     echo "pg_replica.psql = '$PGBIN/psql'"
+    echo "pg_replica.apply_user = '$POSTGRES_USER'"
     [ -n "${SYNCHRONOUS:-}" ]       && echo "pg_replica.synchronous = $SYNCHRONOUS"
     [ -n "${COMPACT_THRESHOLD:-}" ] && echo "pg_replica.compact_threshold = $COMPACT_THRESHOLD"
     [ -n "${WAL_KEEP:-}" ]          && echo "wal_keep_size = '$WAL_KEEP'"
