@@ -19,6 +19,7 @@ pub static PASSFILE: GucSetting<Option<CString>> = GucSetting::<Option<CString>>
 pub static RAFT_DIR: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
 pub static APPLY_USER: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
 pub static APPLY_DB: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
+pub static APPLY_ADDR: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
 
 pub fn init() {
     GucRegistry::define_bool_guc(
@@ -136,6 +137,15 @@ pub fn init() {
     );
 
     GucRegistry::define_string_guc(
+        c"pg_replica.apply_addr",
+        c"host:port psql connects to for local apply actions (promote/fence/repoint/reload).",
+        c"Must reach the LOCAL Postgres from wherever the supervisor runs. Empty defaults to 127.0.0.1 with this node's pg_replica.pg_addrs port — the node's advertised address is often unreachable from inside its own container (Docker published-port hairpin).",
+        &APPLY_ADDR,
+        GucContext::Postmaster,
+        GucFlags::default(),
+    );
+
+    GucRegistry::define_string_guc(
         c"pg_replica.apply_db",
         c"Database psql connects to when applying control-plane actions on the local node.",
         c"Any database the apply_user can connect to; the SQL is cluster-global. Empty falls back to the POSTGRES_DB environment variable, then 'postgres'.",
@@ -227,6 +237,13 @@ pub fn apply_user() -> String {
                 .unwrap_or_else(|| String::from("postgres"))
         })
         .clone()
+}
+
+pub fn apply_addr() -> String {
+    APPLY_ADDR
+        .get()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 pub fn apply_db() -> String {

@@ -30,7 +30,8 @@ fi
 
 PKGROOT="$(mktemp -d)"
 cp -a "${STAGE}/." "${PKGROOT}/"
-mkdir -p "${PKGROOT}/DEBIAN"
+mkdir -p "${PKGROOT}/DEBIAN" "${PKGROOT}/opt/pg_replica"
+install -m 0755 "${ROOT}/scripts/rejoin.sh" "${ROOT}/scripts/watchdog.sh" "${PKGROOT}/opt/pg_replica/"
 
 cat > "${PKGROOT}/DEBIAN/control" <<EOF
 Package: ${PKG}

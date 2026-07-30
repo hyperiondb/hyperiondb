@@ -65,9 +65,13 @@ fn standby_conninfo(pg_members: &[rpc::Peer], passfile: &str, node_id: u64) -> S
     )
 }
 
-fn apply_setting(psql: &str, host: &str, port: &str, sql: &str) -> bool {
-    apply::run_sql(psql, host, port, sql).is_ok()
-        && apply::run_sql(psql, host, port, "SELECT pg_reload_conf()").is_ok()
+fn apply_setting(node_id: u64, psql: &str, host: &str, port: &str, sql: &str) -> bool {
+    let result = apply::run_sql(psql, host, port, sql)
+        .and_then(|_| apply::run_sql(psql, host, port, "SELECT pg_reload_conf()"));
+    if let Err(error) = &result {
+        pgrx::log!("pg_replica: node {} apply failed ({}): {}", node_id, sql, error);
+    }
+    result.is_ok()
 }
 
 #[pg_guard]
@@ -150,13 +154,19 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
     let pgbin = apply::parent_dir(&psql);
     let rejoin_script = config::rejoin_script();
     let passfile = config::passfile();
-    let (my_host, my_port) = apply::split_host_port(
+    let (_, own_port) = apply::split_host_port(
         &pg_members
             .iter()
             .find(|member| member.id == node_id)
             .map(|member| member.addr.clone())
             .unwrap_or_default(),
     );
+    let apply_addr = config::apply_addr();
+    let (my_host, my_port) = if apply_addr.is_empty() {
+        (String::from("127.0.0.1"), own_port)
+    } else {
+        apply::split_host_port(&apply_addr)
+    };
 
     let majority = voters.len() / 2 + 1;
     let sync_quorum = majority.saturating_sub(1);
@@ -220,6 +230,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
     let mut promote_tick: u64 = 0;
     let mut rejoining = false;
     let mut applied_primary: u64 = 0;
+    let mut repoint_backoff: u64 = 0;
     let mut slots_ensured = false;
     let mut applied_read_only: Option<bool> = None;
     let mut applied_sync: Option<String> = None;
@@ -271,6 +282,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
                 promoted = false;
                 rejoining = false;
                 applied_primary = 0;
+                repoint_backoff = 0;
                 slots_ensured = false;
                 reconfirm_pending = false;
                 last_proposed = (0, 0);
@@ -296,12 +308,13 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
         }
 
         if datadir.is_none() && ticks % 20 == 1 {
-            if let Ok(dir) = apply::run_sql(&psql, &my_host, &my_port, "SHOW data_directory") {
-                if !dir.is_empty() {
-                    cluster_marker =
-                        std::path::Path::new(&dir).join("pg_replica_cluster").exists();
-                    datadir = Some(dir);
-                }
+            let dir = apply::run_sql(&psql, &my_host, &my_port, "SHOW data_directory")
+                .ok()
+                .filter(|dir| !dir.is_empty())
+                .or_else(|| std::env::var("PGDATA").ok().filter(|dir| !dir.is_empty()));
+            if let Some(dir) = dir {
+                cluster_marker = std::path::Path::new(&dir).join("pg_replica_cluster").exists();
+                datadir = Some(dir);
             }
         }
         if !cluster_marker && decided.is_some() {
@@ -414,6 +427,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
             authorized_since = None;
             if applied_sync.as_deref() != Some("") {
                 if apply_setting(
+                    node_id,
                     &psql,
                     &my_host,
                     &my_port,
@@ -452,7 +466,10 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
                         }
                     }
                 }
-            } else if decided_primary != 0 && applied_primary != decided_primary {
+            } else if decided_primary != 0
+                && applied_primary != decided_primary
+                && ticks >= repoint_backoff
+            {
                 if let Some(member) = pg_members.iter().find(|member| member.id == decided_primary) {
                     let conninfo = standby_conninfo(&pg_members, &passfile, node_id);
                     pgrx::log!(
@@ -462,12 +479,15 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
                         member.addr
                     );
                     if apply_setting(
+                        node_id,
                         &psql,
                         &my_host,
                         &my_port,
                         &format!("ALTER SYSTEM SET primary_conninfo = '{}'", conninfo),
                     ) {
                         applied_primary = decided_primary;
+                    } else {
+                        repoint_backoff = ticks + 20;
                     }
                 }
             }
@@ -528,6 +548,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
             // where read_only=off but synchronous_standby_names is stale/empty.
             if want_read_only && applied_read_only != Some(true) {
                 if apply_setting(
+                    node_id,
                     &psql,
                     &my_host,
                     &my_port,
@@ -545,6 +566,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
             if let Some(want_sync) = want_sync {
                 if applied_sync.as_deref() != Some(want_sync) {
                     if apply_setting(
+                        node_id,
                         &psql,
                         &my_host,
                         &my_port,
@@ -561,6 +583,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
             }
             if !want_read_only && applied_read_only != Some(false) {
                 if apply_setting(
+                    node_id,
                     &psql,
                     &my_host,
                     &my_port,

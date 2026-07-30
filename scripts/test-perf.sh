@@ -22,6 +22,7 @@ echo "=== cluster ready (asynchronous mode) ==="
 cl_wait_status "$P1" "decided_primary=1 seq=1 quorum=true read_only=false" 80
 for i in $(seq 1 30); do [ "$(q $P2 'SELECT pg_is_in_recovery()')" = "t" ] && [ "$(q $P3 'SELECT pg_is_in_recovery()')" = "t" ] && break; sleep 0.5; done
 q "$P1" "CREATE TABLE perf (id bigint)" >/dev/null
+[ "$(q "$P1" "SELECT to_regclass('perf') IS NOT NULL")" = "t" ] || { echo "  CHECK: perf table missing after CREATE on node1 (primary not writable, or probing a different cluster); aborting"; exit 1; }
 echo "  primary=$(primary_port) status: $(q $P1 'SELECT replica.status()' | sed 's/.*| //')"
 
 declare -A PID
@@ -73,6 +74,7 @@ TPS_OK=0; awk -v t="${TPS:-0}" 'BEGIN{exit !(t>0)}' && TPS_OK=1
 echo
 echo "=== C2. FAILOVER latency (kill -9 primary -> new primary accepts a write) ==="
 KP="$(primary_port)"
+[ -z "$KP" ] && { echo "  CHECK: no primary found before failover measurement; aborting"; exit 1; }
 echo "  killing primary node$KP with SIGKILL..."
 T_KILL="$(now_ms)"
 cl_kill "$KP"

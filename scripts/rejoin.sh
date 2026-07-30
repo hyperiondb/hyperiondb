@@ -9,6 +9,17 @@ NODE_ID="$5"
 PASSFILE="${6:-}"
 STANDBY_CONNINFO="${7:-}"
 
+STATE_DIR="$(dirname "$DATADIR")"
+LOG="${STATE_DIR}/$(basename "$DATADIR").log"
+log() { echo "[rejoin $(date -u +%H:%M:%S)] $*" >>"$LOG"; }
+
+if [ "${PGR_REJOIN_MODE:-inplace}" = "marker" ]; then
+  printf '%s\n%s\n%s\n' "$LEADER_HOST" "$LEADER_PORT" "$STANDBY_CONNINFO" > "${STATE_DIR}/rejoin_pending.tmp"
+  mv "${STATE_DIR}/rejoin_pending.tmp" "${STATE_DIR}/rejoin_pending"
+  log "deposed primary: rejoin_pending written (leader ${LEADER_HOST}:${LEADER_PORT}); stopping postgres immediately (never let a graceful shutdown locally-commit an in-flight sync write that rewind will discard) — the container entrypoint performs the rewind on restart"
+  exec "$PGBIN/pg_ctl" -D "$DATADIR" stop -m immediate
+fi
+
 [ -n "$PASSFILE" ] && export PGPASSFILE="$PASSFILE"
 PASS_KW=""
 [ -n "$PASSFILE" ] && PASS_KW=" passfile=$PASSFILE"
@@ -17,14 +28,10 @@ REJOIN_MARK=/tmp/pg_replica_rejoin_active
 touch "$REJOIN_MARK"
 trap 'rm -f "$REJOIN_MARK"' EXIT
 
-LOG="$(dirname "$DATADIR")/$(basename "$DATADIR").log"
-
-log() { echo "[rejoin $(date -u +%H:%M:%S)] $*" >>"$LOG"; }
-
 log "stopping deposed primary at $DATADIR (immediate: never let a graceful shutdown locally-commit an in-flight sync write that rewind will discard)"
 "$PGBIN/pg_ctl" -D "$DATADIR" stop -m immediate >>"$LOG" 2>&1 || true
 
-CONF_SAVE="$(dirname "$DATADIR")/$(basename "$DATADIR").conf.save"
+CONF_SAVE="${STATE_DIR}/$(basename "$DATADIR").conf.save"
 cp "$DATADIR/postgresql.conf" "$CONF_SAVE"
 
 log "waiting for leader $LEADER_HOST:$LEADER_PORT to finish promoting (a rewind against a not-yet-promoted leader is a no-op that strands us on the old timeline)"

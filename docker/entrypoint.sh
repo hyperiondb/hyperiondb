@@ -110,7 +110,7 @@ seed_primary() {
   ensure_hba
   node_conf
 
-  "$PGBIN/pg_ctl" -D "$PGDATA" -o "-c listen_addresses=127.0.0.1" -w start >/dev/null
+  "$PGBIN/pg_ctl" -D "$PGDATA" -o "-c listen_addresses=127.0.0.1 -c pg_replica.node_id=0" -w start >/dev/null
   "$PGBIN/psql" -h 127.0.0.1 -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 \
     -v repl_pw="$REPL_PASS" >/dev/null <<'SQL'
 CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD :'repl_pw';
