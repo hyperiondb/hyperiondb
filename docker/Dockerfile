@@ -2,6 +2,7 @@ ARG PARADEDB=paradedb/paradedb:v0.23.1
 
 FROM ${PARADEDB} AS builder
 USER root
+RUN printf 'Acquire::Retries "10";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n' > /etc/apt/apt.conf.d/80-retries
 RUN set -eux; \
     PGVER="$(pg_config --version | grep -oE '[0-9]+' | head -1)"; \
     apt-get update; \
@@ -30,6 +31,7 @@ RUN cp "$(pg_config --sharedir)/extension/pg_replica--"*.sql /staging/
 
 FROM ${PARADEDB}
 USER root
+RUN printf 'Acquire::Retries "10";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n' > /etc/apt/apt.conf.d/80-retries
 COPY --from=builder /staging/ /staging/
 RUN set -eux; \
     PKGLIB="$(pg_config --pkglibdir)"; SHARE="$(pg_config --sharedir)"; \

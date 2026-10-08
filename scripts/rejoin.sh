@@ -41,6 +41,7 @@ for _ in $(seq 1 120); do
 done
 
 log "pg_rewind against leader $LEADER_HOST:$LEADER_PORT"
+rm -f "$DATADIR/standby.signal" "$DATADIR/recovery.signal"
 if "$PGBIN/pg_rewind" \
   --target-pgdata="$DATADIR" \
   --source-server="host=$LEADER_HOST port=$LEADER_PORT user=replicator dbname=postgres" \

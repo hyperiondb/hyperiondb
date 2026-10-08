@@ -1,0 +1,1 @@
+-- pg_replica 0.7.4: no SQL-level changes; all changes are in the shared library.

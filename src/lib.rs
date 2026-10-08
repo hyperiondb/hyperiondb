@@ -40,6 +40,12 @@ fn local_wal_lsn(in_recovery: bool) -> u64 {
     }
 }
 
+fn replay_position() -> (u64, u32) {
+    let mut tli: pg_sys::TimeLineID = 0;
+    let lsn = unsafe { pg_sys::GetXLogReplayRecPtr(&mut tli) };
+    (lsn, tli)
+}
+
 fn standby_conninfo(pg_members: &[rpc::Peer], passfile: &str, node_id: u64) -> String {
     let mut hosts = Vec::new();
     let mut ports = Vec::new();
@@ -222,6 +228,19 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
     let mut last_heard: HashMap<u64, Instant> = HashMap::new();
     let mut peers_reconfirm: HashMap<u64, bool> = HashMap::new();
     let mut peers_seq: HashMap<u64, u64> = HashMap::new();
+    let mut peers_adopt: HashMap<u64, bool> = HashMap::new();
+    let adopt_file = format!("{}/adopt_primary", raft_dir);
+    let mut adopt_requested = std::path::Path::new(&adopt_file).exists();
+    if adopt_requested {
+        pgrx::log!(
+            "pg_replica: node {} ADOPT requested by {}; asking the cluster to make this node primary",
+            node_id,
+            adopt_file
+        );
+    }
+    let mut timeline_checked = false;
+    let mut timeline_backoff: u64 = 0;
+    let mut timeline_probe: Option<std::sync::mpsc::Receiver<Option<(u32, String)>>> = None;
     let mut reconfirm_pending = false;
     let mut decided: Option<failover::Decision> = handle.current_decision();
     let mut last_proposed: (u64, u64) = (0, 0);
@@ -271,6 +290,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
             if let Some(gossip) = failover::decode_gossip(&payload) {
                 peers_lsn.insert(from, (gossip.lsn, gossip.in_recovery, Instant::now()));
                 peers_reconfirm.insert(from, gossip.reconfirm);
+                peers_adopt.insert(from, gossip.adopt);
                 let known_seq = peers_seq.entry(from).or_insert(0);
                 *known_seq = (*known_seq).max(gossip.seq);
             }
@@ -286,13 +306,25 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
                 slots_ensured = false;
                 reconfirm_pending = false;
                 last_proposed = (0, 0);
+                timeline_checked = false;
+                timeline_backoff = 0;
+                timeline_probe = None;
                 pgrx::log!(
                     "pg_replica: node {} DECISION seq={} primary={}",
                     node_id,
                     decision.seq,
                     decision.primary
                 );
+                if adopt_requested && decision.primary == node_id {
+                    let _ = std::fs::remove_file(&adopt_file);
+                    adopt_requested = false;
+                    pgrx::log!("pg_replica: node {} ADOPT complete; {} removed", node_id, adopt_file);
+                }
             }
+        }
+        if adopt_requested && ticks % 10 == 0 && !std::path::Path::new(&adopt_file).exists() {
+            adopt_requested = false;
+            pgrx::log!("pg_replica: node {} ADOPT withdrawn ({} removed)", node_id, adopt_file);
         }
 
         let in_recovery = unsafe { pg_sys::RecoveryInProgress() };
@@ -301,9 +333,15 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
         ticks += 1;
         let my_lsn = local_wal_lsn(in_recovery);
         peers_lsn.insert(node_id, (my_lsn, in_recovery, Instant::now()));
+        peers_adopt.insert(node_id, adopt_requested);
         if ticks % gossip_every == 0 {
-            let payload =
-                failover::encode_gossip(my_lsn, in_recovery, reconfirm_pending, decided_seq);
+            let payload = failover::encode_gossip(
+                my_lsn,
+                in_recovery,
+                reconfirm_pending,
+                decided_seq,
+                adopt_requested,
+            );
             handle.gossip_broadcast(node_id, &payload);
         }
 
@@ -349,7 +387,17 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
                     .iter()
                     .any(|member| peers_reconfirm.get(&member.0).copied().unwrap_or(false));
 
-            let candidate = if decided.is_none() {
+            let adopter = live
+                .iter()
+                .filter(|member| !member.2 && peers_adopt.get(&member.0).copied().unwrap_or(false))
+                .map(|member| member.0)
+                .min();
+
+            let adopt_target = adopter.filter(|id| *id != current_primary);
+
+            let candidate = if adopt_target.is_some() {
+                adopt_target
+            } else if decided.is_none() {
                 genesis_winner
             } else if !primary_alive {
                 let psql_ref = &psql;
@@ -401,11 +449,12 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
                         last_proposed = (seq, candidate);
                         last_proposed_tick = ticks;
                         pgrx::log!(
-                            "pg_replica: node {} PROPOSE seq={} primary={} live={:?}",
+                            "pg_replica: node {} PROPOSE seq={} primary={} live={:?} adopt={}",
                             node_id,
                             seq,
                             candidate,
-                            live
+                            live,
+                            adopt_target.is_some()
                         );
                     }
                 }
@@ -488,6 +537,78 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
                         applied_primary = decided_primary;
                     } else {
                         repoint_backoff = ticks + 20;
+                    }
+                }
+            } else if decided_primary != 0
+                && applied_primary == decided_primary
+                && !timeline_checked
+                && !rejoining
+                && !rejoin_script.is_empty()
+                && ticks >= timeline_backoff
+            {
+                if let Some(member) = pg_members.iter().find(|member| member.id == decided_primary) {
+                    let (primary_host, primary_port) = apply::split_host_port(&member.addr);
+                    let answer = match &timeline_probe {
+                        None => {
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            let (probe_psql, probe_host, probe_port) =
+                                (psql.clone(), primary_host.clone(), primary_port.clone());
+                            std::thread::spawn(move || {
+                                let _ = tx.send(apply::primary_timeline_history(
+                                    &probe_psql,
+                                    &probe_host,
+                                    &probe_port,
+                                ));
+                            });
+                            timeline_probe = Some(rx);
+                            None
+                        }
+                        Some(rx) => match rx.try_recv() {
+                            Ok(answer) => Some(answer),
+                            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
+                        },
+                    };
+                    match answer {
+                        None => {}
+                        Some(None) => {
+                            timeline_probe = None;
+                            timeline_backoff = ticks + 50;
+                        }
+                        Some(Some((primary_tli, history))) => {
+                            timeline_probe = None;
+                            timeline_checked = true;
+                            let (replay_lsn, replay_tli) = replay_position();
+                            if failover::diverged(replay_tli, replay_lsn, primary_tli, &history) {
+                                let datadir = datadir.clone().unwrap_or_else(|| {
+                                    apply::run_sql(&psql, &my_host, &my_port, "SHOW data_directory")
+                                        .unwrap_or_default()
+                                });
+                                if !datadir.is_empty() {
+                                    pgrx::log!(
+                                        "pg_replica: node {} REJOIN spawn (standby on timeline {} at {:X}/{:X} cannot follow primary {} on timeline {}; rewind against {})",
+                                        node_id,
+                                        replay_tli,
+                                        replay_lsn >> 32,
+                                        replay_lsn & 0xFFFF_FFFF,
+                                        decided_primary,
+                                        primary_tli,
+                                        member.addr
+                                    );
+                                    apply::spawn_rejoin(
+                                        &rejoin_script,
+                                        &pgbin,
+                                        &datadir,
+                                        &primary_host,
+                                        &primary_port,
+                                        node_id,
+                                        &passfile,
+                                        &standby_conninfo(&pg_members, &passfile, node_id),
+                                    );
+                                    rejoining = true;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -600,6 +721,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
             }
 
             if !authorized
+                && !adopt_requested
                 && decided_primary != 0
                 && decided_primary != node_id
                 && !rejoining

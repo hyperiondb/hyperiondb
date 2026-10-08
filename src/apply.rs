@@ -131,6 +131,30 @@ pub fn peer_wal_lsn(psql: &str, host: &str, port: &str) -> Option<u64> {
     }
 }
 
+pub fn primary_timeline_history(psql: &str, host: &str, port: &str) -> Option<(u32, String)> {
+    let mut command = Command::new(psql);
+    command
+        .args([
+            "-h", host,
+            "-p", port,
+            "-U", "replicator",
+            "-d", "postgres",
+            "-w",
+            "-tAc",
+            "SELECT tli || '|' || coalesce(convert_from(pg_read_binary_file('pg_wal/' || hex || '.history', 0, 1048576, true), 'UTF8'), '') \
+             FROM (SELECT substr(pg_walfile_name(pg_current_wal_lsn()), 1, 8) AS hex) w, \
+             LATERAL (SELECT ('x' || hex)::bit(32)::int AS tli) t",
+        ])
+        .env("PGCONNECT_TIMEOUT", "2");
+    let output = output_with_timeout(command, Duration::from_secs(3))?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let (tli, history) = text.split_once('|')?;
+    Some((tli.trim().parse().ok()?, history.to_string()))
+}
+
 pub fn wal_lsn(psql: &str, host: &str, port: &str, in_recovery: bool) -> u64 {
     let sql = if in_recovery {
         "SELECT pg_wal_lsn_diff(COALESCE(pg_last_wal_receive_lsn(), '0/0'), '0/0')::bigint"
