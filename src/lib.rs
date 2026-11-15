@@ -190,8 +190,9 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
     let heartbeat_file = format!("{}/pg_replica_hb_{}", raft_dir, node_id);
     let watchdog_script = config::watchdog_script();
     let apply_user = config::apply_user();
+    let mut watchdog = None;
     if !watchdog_script.is_empty() {
-        if apply::spawn_watchdog(
+        watchdog = apply::spawn_watchdog(
             &watchdog_script,
             &psql,
             &my_host,
@@ -199,7 +200,8 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
             &heartbeat_file,
             node_id,
             &apply_user,
-        ) {
+        );
+        if watchdog.is_some() {
             pgrx::log!("pg_replica: node {} deadman watchdog spawned", node_id);
         }
     }
@@ -248,6 +250,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
     let mut promoted = false;
     let mut promote_tick: u64 = 0;
     let mut rejoining = false;
+    let mut rejoin = None;
     let mut applied_primary: u64 = 0;
     let mut repoint_backoff: u64 = 0;
     let mut slots_ensured = false;
@@ -273,8 +276,10 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
         }
         last_loop = loop_now;
         apply::write_heartbeat(&heartbeat_file);
-        if !watchdog_script.is_empty() && ticks % 50 == 49 {
-            apply::spawn_watchdog(
+        apply::reap(&mut rejoin);
+        apply::reap(&mut watchdog);
+        if !watchdog_script.is_empty() && ticks % 50 == 49 && watchdog.is_none() {
+            watchdog = apply::spawn_watchdog(
                 &watchdog_script,
                 &psql,
                 &my_host,
@@ -543,6 +548,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
                 && applied_primary == decided_primary
                 && !timeline_checked
                 && !rejoining
+                && rejoin.is_none()
                 && !rejoin_script.is_empty()
                 && ticks >= timeline_backoff
             {
@@ -595,7 +601,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
                                         primary_tli,
                                         member.addr
                                     );
-                                    apply::spawn_rejoin(
+                                    rejoin = apply::spawn_rejoin(
                                         &rejoin_script,
                                         &pgbin,
                                         &datadir,
@@ -725,6 +731,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
                 && decided_primary != 0
                 && decided_primary != node_id
                 && !rejoining
+                && rejoin.is_none()
                 && !rejoin_script.is_empty()
             {
                 if let Some(member) = pg_members.iter().find(|member| member.id == decided_primary) {
@@ -740,7 +747,7 @@ pub extern "C-unwind" fn pg_replica_supervisor_main(_arg: pg_sys::Datum) {
                             decided_primary,
                             member.addr
                         );
-                        apply::spawn_rejoin(
+                        rejoin = apply::spawn_rejoin(
                             &rejoin_script,
                             &pgbin,
                             &datadir,
