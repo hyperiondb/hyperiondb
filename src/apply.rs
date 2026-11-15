@@ -1,4 +1,4 @@
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const SQL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -43,6 +43,14 @@ pub fn parent_dir(path: &str) -> String {
     }
 }
 
+pub fn reap(child: &mut Option<Child>) {
+    if let Some(running) = child {
+        if !matches!(running.try_wait(), Ok(None)) {
+            *child = None;
+        }
+    }
+}
+
 pub fn spawn_rejoin(
     script: &str,
     pgbin: &str,
@@ -52,7 +60,7 @@ pub fn spawn_rejoin(
     node_id: u64,
     passfile: &str,
     standby_conninfo: &str,
-) -> bool {
+) -> Option<Child> {
     Command::new("setsid")
         .arg("bash")
         .arg(script)
@@ -67,7 +75,7 @@ pub fn spawn_rejoin(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .is_ok()
+        .ok()
 }
 
 pub fn write_heartbeat(path: &str) {
@@ -89,7 +97,7 @@ pub fn spawn_watchdog(
     heartbeat: &str,
     node_id: u64,
     user: &str,
-) -> bool {
+) -> Option<Child> {
     Command::new("setsid")
         .arg("bash")
         .arg(script)
@@ -103,7 +111,7 @@ pub fn spawn_watchdog(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .is_ok()
+        .ok()
 }
 
 pub fn peer_wal_lsn(psql: &str, host: &str, port: &str) -> Option<u64> {
